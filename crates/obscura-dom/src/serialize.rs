@@ -1,6 +1,6 @@
 use html5ever::{ns, QualName};
 
-use crate::tree::{DomTree, NodeData, NodeId};
+use crate::tree::{Attribute, DomTree, NodeData, NodeId};
 
 // A unit of pending serialization work. Held on an explicit heap stack instead
 // of the call stack so a deeply nested tree cannot overflow the thread stack and
@@ -15,6 +15,15 @@ enum SerializeWork {
 }
 
 impl DomTree {
+    pub(crate) fn element_opening_tag(&self, node_id: NodeId) -> Option<String> {
+        self.with_node(node_id, |node| {
+            let NodeData::Element { name, attrs, .. } = &node.data else { return None };
+            let mut tag = String::new();
+            push_opening_tag(name, attrs, &mut tag);
+            Some(tag)
+        }).flatten()
+    }
+
     pub fn outer_html(&self, node_id: NodeId) -> String {
         let mut buf = String::new();
         self.serialize_worklist(vec![SerializeWork::Node(node_id, true)], &mut buf);
@@ -102,16 +111,7 @@ impl DomTree {
                 NodeData::Element { name, attrs, template_contents, .. } => {
                     let tag = name.local.as_ref();
                     if include_self {
-                        buf.push('<');
-                        buf.push_str(tag);
-                        for attr in attrs {
-                            buf.push(' ');
-                            push_attribute_name(&attr.name, buf);
-                            buf.push_str("=\"");
-                            escape_attr(&attr.value, buf);
-                            buf.push('"');
-                        }
-                        buf.push('>');
+                        push_opening_tag(name, attrs, buf);
                     }
 
                     if !serializes_as_void(name) {
@@ -175,6 +175,19 @@ impl DomTree {
             }
         }
     }
+}
+
+fn push_opening_tag(name: &QualName, attrs: &[Attribute], buf: &mut String) {
+    buf.push('<');
+    buf.push_str(name.local.as_ref());
+    for attr in attrs {
+        buf.push(' ');
+        push_attribute_name(&attr.name, buf);
+        buf.push_str("=\"");
+        escape_attr(&attr.value, buf);
+        buf.push('"');
+    }
+    buf.push('>');
 }
 
 // "Escaping a string" from the HTML Standard. Attribute mode escapes `"`, and

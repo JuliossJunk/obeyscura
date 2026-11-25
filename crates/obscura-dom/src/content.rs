@@ -2,6 +2,12 @@
 
 use crate::{parse_html, DomTree, NodeData, NodeId};
 
+enum Block {
+    Element(NodeId),
+    Inline(Vec<NodeId>),
+    Close(String),
+}
+
 /// Convert a serialized HTML snapshot to Markdown with HTML for structures
 /// that Markdown cannot express faithfully. The caller retains the original
 /// snapshot. Parsing the snapshot does not execute scripts or load resources.
@@ -14,26 +20,43 @@ pub fn structured_markdown(html: &str) -> String {
     collect_metadata(&tree, &mut markdown);
     clean_body(&tree, body);
 
-    if block_children(&tree, body) {
-        let mut pending = tree.children(body);
-        pending.reverse();
-        while let Some(id) = pending.pop() {
-            let Some(node) = tree.borrow_node(id) else { continue };
-            let Some(name) = node.as_element() else { continue };
-            let tag = name.local.as_ref();
-            let has_attributes = node.attrs().is_some_and(|attrs| !attrs.is_empty());
-            if !has_attributes && is_container(tag) && block_children(&tree, id) {
-                pending.extend(tree.children(id).into_iter().rev());
-            } else if !has_attributes && matches!(tag, "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
-                && plain_block(&tree, id, tag, &mut markdown)
-            {
+    let mut pending = Vec::new();
+    schedule_blocks(&tree, body, &mut pending);
+    while let Some(block) = pending.pop() {
+        let id = match block {
+            Block::Element(id) => id,
+            Block::Close(tag) => {
+                push_html(&mut markdown, &format!("</{tag}>"));
                 continue;
-            } else {
-                push_html(&mut markdown, &tree.outer_html(id));
             }
+            Block::Inline(nodes) => {
+                if !push_markdown_block(&tree, &nodes, "p", &mut markdown) {
+                    let html = nodes.into_iter().fold(String::from("<div>"), |mut html, id| {
+                        html.push_str(&tree.outer_html(id));
+                        html
+                    });
+                    push_html(&mut markdown, &(html + "</div>"));
+                }
+                continue;
+            }
+        };
+        let Some(node) = tree.borrow_node(id) else { continue };
+        let Some(name) = node.as_element() else { continue };
+        let tag = name.local.as_ref();
+        let has_attributes = node.attrs().is_some_and(|attrs| !attrs.is_empty());
+        if is_container(tag) {
+            if has_attributes || tag == "nav" {
+                if let Some(opening) = tree.element_opening_tag(id) {
+                    push_html(&mut markdown, &opening);
+                    pending.push(Block::Close(tag.to_string()));
+                }
+            }
+            schedule_blocks(&tree, id, &mut pending);
+        } else if has_attributes || !matches!(tag, "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+            || !push_markdown_block(&tree, &tree.children(id), tag, &mut markdown)
+        {
+            push_html(&mut markdown, &tree.outer_html(id));
         }
-    } else {
-        push_html(&mut markdown, &format!("<div>{}</div>", tree.inner_html(body)));
     }
 
     markdown.trim_end().to_string()
@@ -196,35 +219,44 @@ fn is_container(tag: &str) -> bool {
     matches!(tag, "article" | "aside" | "div" | "footer" | "header" | "main" | "nav" | "section" | "address")
 }
 
-fn block_children(tree: &DomTree, id: NodeId) -> bool {
-    tree.children(id).into_iter().all(|child| {
-        tree.with_node(child, |node| match &node.data {
-            NodeData::Text { contents } => contents.trim().is_empty(),
-            NodeData::Element { name, .. } => {
-                let tag = name.local.as_ref();
-                is_container(tag) || matches!(
-                    tag,
-                    "blockquote" | "details" | "dl" | "figure" | "h1" | "h2" | "h3" | "h4" | "h5"
-                        | "h6" | "hr" | "math" | "ol" | "p" | "pre" | "table" | "ul"
-                )
+fn schedule_blocks(tree: &DomTree, parent: NodeId, pending: &mut Vec<Block>) {
+    let mut ordered = Vec::new();
+    let mut inline = Vec::new();
+    let mut inline_has_content = false;
+    for id in tree.children(parent) {
+        let Some(node) = tree.borrow_node(id) else { continue };
+        if node.as_element().is_some_and(|name| is_block(name.local.as_ref())) {
+            if inline_has_content {
+                ordered.push(Block::Inline(std::mem::take(&mut inline)));
+            } else {
+                inline.clear();
             }
-            _ => true,
-        }).unwrap_or(true)
-    })
+            inline_has_content = false;
+            ordered.push(Block::Element(id));
+        } else {
+            inline_has_content |= node.text_content_of_text_node().is_none_or(|text| !text.trim().is_empty());
+            inline.push(id);
+        }
+    }
+    if inline_has_content {
+        ordered.push(Block::Inline(inline));
+    }
+    pending.extend(ordered.into_iter().rev());
 }
 
-fn plain_block(tree: &DomTree, id: NodeId, tag: &str, out: &mut String) -> bool {
-    if !tree.children(id).into_iter().all(|child| tree.with_node(child, |node| node.is_text()) == Some(true)) {
-        return false;
-    }
-    let text = tree.text_content(id).split_ascii_whitespace().collect::<Vec<_>>().join(" ");
-    if text.is_empty() {
-        return false;
-    }
-    if text.contains(['\\', '`', '*', '_', '[', ']', '<', '>', '&', '~', '|', '#'])
-        || text.starts_with(['-', '+', '#', '='])
-        || text.trim_start_matches(|ch: char| ch.is_ascii_digit()).starts_with(['.', ')'])
-    {
+fn is_block(tag: &str) -> bool {
+    is_container(tag) || matches!(
+        tag,
+        "blockquote" | "details" | "dl" | "figure" | "h1" | "h2" | "h3" | "h4" | "h5"
+            | "h6" | "hr" | "math" | "ol" | "p" | "pre" | "table" | "ul"
+    )
+}
+
+fn push_markdown_block(tree: &DomTree, nodes: &[NodeId], tag: &str, out: &mut String) -> bool {
+    let Some(inline) = markdown_inline(tree, nodes) else { return false };
+    let text = inline.split_ascii_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() || text.starts_with(['-', '+', '#', '='])
+        || text.trim_start_matches(|ch: char| ch.is_ascii_digit()).starts_with(['.', ')']) {
         return false;
     }
     if tag.starts_with('h') {
@@ -235,6 +267,46 @@ fn plain_block(tree: &DomTree, id: NodeId, tag: &str, out: &mut String) -> bool 
     out.push_str(&text);
     out.push_str("\n\n");
     true
+}
+
+fn markdown_inline(tree: &DomTree, ids: &[NodeId]) -> Option<String> {
+    let mut result = String::new();
+    for &id in ids {
+        let node = tree.borrow_node(id)?;
+        if let Some(text) = node.text_content_of_text_node() {
+            if !plain_text(text) {
+                return None;
+            }
+            result.push_str(text);
+        } else if node.as_element().is_some_and(|name| name.ns == ns!(html) && name.local.as_ref() == "a")
+            && node.attrs().is_some_and(|attrs| attrs.len() == 1)
+        {
+            let href = node.get_attribute("href")?;
+            if href.is_empty() || !href.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"-._~:/?#@%=+;,".contains(&byte)) {
+                return None;
+            }
+            let children = tree.children(id);
+            if !children.into_iter().all(|id| tree.with_node(id, |child| child.is_text()) == Some(true)) {
+                return None;
+            }
+            let text = tree.text_content(id);
+            if text.is_empty() || text != text.trim() || !plain_text(&text) {
+                return None;
+            }
+            result.push('[');
+            result.push_str(&text);
+            result.push_str("](");
+            result.push_str(href);
+            result.push(')');
+        } else {
+            return None;
+        }
+    }
+    Some(result)
+}
+
+fn plain_text(text: &str) -> bool {
+    !text.contains(['\\', '`', '*', '_', '[', ']', '<', '>', '&', '~', '|', '#'])
 }
 
 fn push_html(out: &mut String, html: &str) {
@@ -261,7 +333,15 @@ mod tests {
         let result = structured_markdown(input);
         assert_eq!(
             result,
-            "# Title\n\nMaximum 12.7 W.\n\n<h2 id=\"note\">Note</h2>\n\n<p><a href=\"#note\">Details</a></p>"
+            "# Title\n\nMaximum 12.7 W.\n\n<h2 id=\"note\">Note</h2>\n\n[Details](#note)"
+        );
+    }
+
+    #[test]
+    fn keeps_section_attributes_without_copying_its_entire_html() {
+        assert_eq!(
+            structured_markdown(r#"<section id="sample"><h2>Example</h2><p>Paragraph.</p></section>"#),
+            "<section id=\"sample\">\n\n## Example\n\nParagraph.\n\n</section>"
         );
     }
 
