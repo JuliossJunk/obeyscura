@@ -59,6 +59,11 @@ It serves local fixtures, so it is deterministic and offline. WPT conformance
 and the real-world render corpus also live in that repo; report WPT as subtest
 pass %, not whole-file pass.
 
+## Content benchmark
+
+For DOM capture, Markdown, or MCP content changes, read [BENCHMARK.md](BENCHMARK.md).
+Record the source revision and compare token counts alongside fact and artifact retention.
+
 ## Before you finish
 
 For any code change:

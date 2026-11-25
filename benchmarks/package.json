@@ -1,0 +1,22 @@
+{
+  "name": "obeyscura-content-benchmark",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.23.5"
+  },
+  "scripts": {
+    "benchmark": "node run.mjs",
+    "compare": "node compare.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@mozilla/readability": "0.6.0",
+    "js-tiktoken": "1.0.21",
+    "jsdom": "26.1.0",
+    "markdown-it": "14.3.3",
+    "playwright": "1.65.1",
+    "turndown": "7.2.1",
+    "turndown-plugin-gfm": "1.0.2"
+  }
+}
