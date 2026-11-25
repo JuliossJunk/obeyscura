@@ -80,6 +80,7 @@ fn collect_metadata(tree: &DomTree, out: &mut String) {
 }
 
 fn clean_body(tree: &DomTree, body: NodeId) {
+    let mut preformatted = Vec::new();
     for id in tree.descendants(body) {
         if !tree.is_connected(id) {
             continue;
@@ -99,6 +100,9 @@ fn clean_body(tree: &DomTree, body: NodeId) {
         } else if (name.ns == ns!(html) && safe_html_tag(tag))
             || (name.ns == ns!(mathml) && safe_math_tag(tag))
         {
+            if name.ns == ns!(html) && tag == "pre" {
+                preformatted.push(id);
+            }
             tree.with_node_mut(id, |node| {
                 node.attrs_mut()
                     .expect("element attributes")
@@ -110,6 +114,19 @@ fn clean_body(tree: &DomTree, body: NodeId) {
                 tree.insert_before(id, child);
             }
             tree.detach(id);
+        }
+    }
+    for pre in preformatted {
+        // An HTML parser discards the first line feed after <pre>. Duplicate
+        // a leading line feed in the captured DOM before re-serializing it.
+        if let Some(first) = tree.with_node(pre, |node| node.first_child).flatten() {
+            tree.with_node_mut(first, |node| {
+                if let NodeData::Text { contents } = &mut node.data {
+                    if contents.starts_with('\n') {
+                        contents.insert(0, '\n');
+                    }
+                }
+            });
         }
     }
 }
@@ -265,6 +282,14 @@ mod tests {
         ] {
             assert_eq!(dom.text_content(dom.query_selector(selector).unwrap().unwrap()), text);
         }
+    }
+
+    #[test]
+    fn reparsing_pre_keeps_its_first_leading_line_feed() {
+        let converted = structured_markdown("<pre>\n\n  example\n</pre>");
+        let dom = parse_html(&converted);
+        let code = dom.query_selector("pre").unwrap().unwrap();
+        assert_eq!(dom.text_content(code), "\n  example\n");
     }
 
     #[test]
