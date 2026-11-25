@@ -2,10 +2,12 @@ name: Content benchmark
 
 on:
   push:
-    branches: ['benchmark/baseline']
+    branches: ['benchmark/baseline', 'benchmark/structured-markdown']
     paths:
       - 'benchmarks/**'
       - '.github/workflows/content-benchmark.yml'
+      - 'crates/obscura-dom/**'
+      - 'crates/obscura-cli/**'
   pull_request:
     paths:
       - 'benchmarks/**'
@@ -81,6 +83,12 @@ jobs:
         run: |
           unset OBSCURA_VERSION GITHUB_REF_TYPE GITHUB_REF_NAME GITHUB_REF
           cargo build --locked --release -p obscura-cli --bins --features render
+      - name: Build and stage the converter candidate
+        if: github.ref_name == 'benchmark/structured-markdown'
+        run: |
+          unset OBSCURA_VERSION GITHUB_REF_TYPE GITHUB_REF_NAME GITHUB_REF
+          cargo build --locked --release -p obscura-cli --bins --features render
+          install -m 0755 target/release/obscura target/structured-obscura
       - name: Install benchmark dependencies
         working-directory: benchmarks
         run: |
@@ -90,10 +98,14 @@ jobs:
         working-directory: benchmarks
         env:
           RUN_PUBLIC_BENCHMARK: ${{ inputs.public_pages || github.event_name == 'push' }}
+          RUN_CANDIDATE: ${{ github.ref_name == 'benchmark/structured-markdown' }}
         run: |
           revision=$(git -C ../target/benchmark-source rev-parse HEAD)
           args=(--source-revision "$revision" --obscura-revision "$revision"
             --obscura ../target/benchmark-source/target/release/obscura)
+          if [[ "$RUN_CANDIDATE" == true ]]; then
+            args+=(--converter ../target/structured-obscura --converter-revision HEAD)
+          fi
           npm run benchmark -- "${args[@]}"
           if [[ "$RUN_PUBLIC_BENCHMARK" == true ]]; then
             npm run benchmark -- --dataset public "${args[@]}"
@@ -107,3 +119,28 @@ jobs:
             target/content-benchmark/benchmark_results.*
             target/content-benchmark-public/benchmark_results.*
           if-no-files-found: ignore
+      - name: Install cargo-nextest
+        if: github.ref_name == 'benchmark/structured-markdown'
+        uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2
+        with:
+          tool: nextest
+          fallback: none
+      - name: Test the modified crates
+        if: github.ref_name == 'benchmark/structured-markdown'
+        run: cargo nextest run --release --features render -p obscura-dom -p obscura-cli --no-fail-fast
+      - name: Test the workspace
+        if: github.ref_name == 'benchmark/structured-markdown'
+        run: cargo nextest run --release --features render --no-fail-fast
+      - name: Check out the pinned obstacle course
+        if: github.ref_name == 'benchmark/structured-markdown'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: h4ckf0r0day/obscura-benchmark
+          ref: 2d08d9a8e860e423b47209434a9fba9c75e6eee6
+          path: target/obscura-benchmark
+          persist-credentials: false
+      - name: Run the obstacle course
+        if: github.ref_name == 'benchmark/structured-markdown'
+        run: |
+          OBSCURA_BIN="$GITHUB_WORKSPACE/target/structured-obscura" \
+            python3 target/obscura-benchmark/obstacle-course/run.py --runs 1 --warmup 0

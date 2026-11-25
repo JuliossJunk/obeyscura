@@ -220,6 +220,18 @@ enum Command {
         quiet: bool,
     },
 
+    /// Convert HTML captured by any browser, or retrieve the original bytes.
+    Content {
+        /// Input HTML file. Omit it or pass '-' to read from stdin.
+        input: Option<std::path::PathBuf>,
+
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: ContentFormat,
+
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+    },
+
     Mcp {
         /// Recursively load additional font files before the first render.
         #[arg(long = "font-dir", value_name = "DIR")]
@@ -242,12 +254,20 @@ enum Command {
     },
 }
 
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum ContentFormat {
+    Markdown,
+    Html,
+}
+
 #[derive(Clone, Debug, clap::ValueEnum, PartialEq, Eq)]
 enum DumpFormat {
     Html,
     Text,
     Links,
     Markdown,
+    /// Preserve tables, code, formulas, metadata and nested structure in Markdown.
+    StructuredMarkdown,
     /// Stream the raw HTTP response body verbatim (binary-safe).
     /// Bypasses the browser/JS layer — useful for fetching images,
     /// JSON, JS, CSS, or any non-HTML resource (cf. issue #117).
@@ -646,6 +666,23 @@ async fn run_cli() -> anyhow::Result<()> {
                 global_user_agent.clone(),
             )
             .await?;
+        }
+        Some(Command::Content { input, format, output }) => {
+            let bytes = if let Some(path) = input.filter(|path| path != std::path::Path::new("-")) {
+                tokio::fs::read(path).await?
+            } else {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                std::io::stdin().lock().read_to_end(&mut bytes)?;
+                bytes
+            };
+            let result = match format {
+                ContentFormat::Html => bytes,
+                ContentFormat::Markdown => obscura_dom::content::structured_markdown(
+                    std::str::from_utf8(&bytes)?,
+                ).into_bytes(),
+            };
+            write_or_print_bytes(&result, output.as_ref()).await?;
         }
         Some(Command::Mcp {
             font_dirs,
@@ -1566,6 +1603,9 @@ async fn run_fetch(
         DumpFormat::Text => dump_text(&mut page),
         DumpFormat::Links => dump_links(&page),
         DumpFormat::Markdown => dump_markdown(&mut page),
+        DumpFormat::StructuredMarkdown => {
+            obscura_dom::content::structured_markdown(&dump_html(&page))
+        }
         DumpFormat::Assets => dump_assets(&page),
         DumpFormat::Cookies => dump_cookies(&page),
         // Handled above via the short-circuit branch; unreachable here.

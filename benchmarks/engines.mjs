@@ -148,13 +148,34 @@ export function checkBuildRevision(version, expectedRevision) {
   }
 }
 
-export async function launchObscura(binary, expectedRevision, { publicPages = false } = {}) {
+async function inspectObscuraBinary(binary, expectedRevision) {
   const { stdout } = await execute(binary, ['--version'], { timeout: timeoutMs });
   const version = stdout.trim();
   checkBuildRevision(version, expectedRevision);
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(binary)) hash.update(chunk);
   const binarySha256 = hash.digest('hex');
+  return { version, binarySha256 };
+}
+
+export async function loadConverter(binary, expectedRevision) {
+  const provenance = await inspectObscuraBinary(binary, expectedRevision);
+  return {
+    ...provenance,
+    expectedRevision,
+    convert(html) {
+      return new Promise((resolve, reject) => {
+        const process = execFile(binary, ['content'], { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 },
+          (error, stdout) => error ? reject(error) : resolve(stdout));
+        process.stdin.on('error', reject);
+        process.stdin.end(html);
+      });
+    },
+  };
+}
+
+export async function launchObscura(binary, expectedRevision, { publicPages = false } = {}) {
+  const { version, binarySha256 } = await inspectObscuraBinary(binary, expectedRevision);
   const { server, port } = await listen();
   await promisify(server.close.bind(server))();
   const origin = `http://127.0.0.1:${port}`;

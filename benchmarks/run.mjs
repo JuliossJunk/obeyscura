@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { launchChromium, launchObscura, serveFixtures } from './engines.mjs';
+import { launchChromium, launchObscura, loadConverter, serveFixtures } from './engines.mjs';
 import { evaluateSerializer, measure, standardMarkdown } from './measure.mjs';
 
 const { values: options } = parseArgs({ options: {
@@ -15,6 +15,8 @@ const { values: options } = parseArgs({ options: {
   channel: { type: 'string' },
   obscura: { type: 'string' },
   'obscura-revision': { type: 'string' },
+  converter: { type: 'string' },
+  'converter-revision': { type: 'string' },
   'source-revision': { type: 'string' },
   'allow-partial': { type: 'boolean', default: false },
 } });
@@ -27,6 +29,7 @@ if (!options.obscura && !options['allow-partial']) {
   throw new Error('Pass --obscura with the baseline executable, or --allow-partial for Chromium-only diagnostics');
 }
 if (options['obscura-revision'] && !options.obscura) throw new Error('--obscura-revision requires --obscura');
+if (options['converter-revision'] && !options.converter) throw new Error('--converter-revision requires --converter');
 
 const fromHere = relative => new URL(relative, import.meta.url);
 const sha256 = data => createHash('sha256').update(data).digest('hex');
@@ -41,6 +44,8 @@ const revision = git('rev-parse', 'HEAD');
 const commit = ref => git('rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`);
 const serializerRevision = commit(options['source-revision'] ?? revision);
 const obscuraRevision = options['obscura-revision'] ? commit(options['obscura-revision']) : null;
+const converterRevision = options['converter-revision'] ? commit(options['converter-revision']) : null;
+const converter = options.converter ? await loadConverter(resolve(options.converter), converterRevision) : null;
 const scriptSource = git('show', `${serializerRevision}:${scriptFile}`);
 const upstreamScript = scriptSource.match(/pub const HTML_TO_MARKDOWN_JS: &str = r#"([\s\S]*?)"#;/u)?.[1];
 if (!upstreamScript) throw new Error('Cannot locate the upstream JavaScript serializer');
@@ -55,6 +60,10 @@ const configs = {
   'D-standard': 'Obscura / Turndown + GFM',
   X: 'Chromium DOM / Obscura upstream Markdown JS on an inert DOM',
 };
+if (converter) Object.assign(configs, {
+  E: 'Chromium DOM / shared structured Markdown',
+  F: 'Obscura DOM / shared structured Markdown',
+});
 const rows = [];
 const startedAt = new Date().toISOString();
 const engines = {};
@@ -93,7 +102,7 @@ async function capture(engine, fixture, url) {
   }
 }
 
-function record(config, attempt, fixture, capture, format, extract) {
+async function record(config, attempt, fixture, capture, format, extract) {
   const row = {
     config, attempt, fixture: fixture.id, category: fixture.category, split: fixture.split,
     status: capture.status, error: capture.error, httpStatus: capture.httpStatus ?? null,
@@ -106,7 +115,7 @@ function record(config, attempt, fixture, capture, format, extract) {
   if (capture.status === 'ok') {
     const start = performance.now();
     try {
-      const content = extract(capture);
+      const content = await extract(capture);
       row.extractMs = config === 'D' ? capture.stages.nativeMarkdown : performance.now() - start;
       Object.assign(row, measure(content, format, fixture, capture.url));
     } catch (error) {
@@ -146,16 +155,20 @@ try {
       for (const engine of order) captured[engine] = await capture(engine, fixture, url);
       const chrome = captured.chromium;
       const obscura = captured.obscura;
-      record('A', attempt, fixture, chrome, 'html', data => data.html);
-      record('B', attempt, fixture, chrome, 'markdown', data => standardMarkdown(data.html, data.url));
-      record('C', attempt, fixture, chrome, 'markdown', data => standardMarkdown(data.html, data.url, true));
-      record('D', attempt, fixture, obscura, 'markdown', data => {
+      await record('A', attempt, fixture, chrome, 'html', data => data.html);
+      await record('B', attempt, fixture, chrome, 'markdown', data => standardMarkdown(data.html, data.url));
+      await record('C', attempt, fixture, chrome, 'markdown', data => standardMarkdown(data.html, data.url, true));
+      await record('D', attempt, fixture, obscura, 'markdown', data => {
         if (data.markdownError) throw new Error(data.markdownError);
         return data.markdown;
       });
-      record('D-raw', attempt, fixture, obscura, 'html', data => data.html);
-      record('D-standard', attempt, fixture, obscura, 'markdown', data => standardMarkdown(data.html, data.url));
-      record('X', attempt, fixture, chrome, 'markdown', data => evaluateSerializer(data.html, data.url, upstreamScript));
+      await record('D-raw', attempt, fixture, obscura, 'html', data => data.html);
+      await record('D-standard', attempt, fixture, obscura, 'markdown', data => standardMarkdown(data.html, data.url));
+      await record('X', attempt, fixture, chrome, 'markdown', data => evaluateSerializer(data.html, data.url, upstreamScript));
+      if (converter) {
+        await record('E', attempt, fixture, chrome, 'markdown', data => converter.convert(data.html));
+        await record('F', attempt, fixture, obscura, 'markdown', data => converter.convert(data.html));
+      }
     }
     console.log(`Completed run ${attempt}/${runs}`);
   }
@@ -219,6 +232,9 @@ const report = {
   startedAt,
   fixtureDataset: { version: datasetVersion, sha256: sha256(fixtureSource), size: selected.length, split: options.split },
   serializerDiagnostic: { revision: serializerRevision, source: scriptFile, sha256: sha256(upstreamScript) },
+  converter: converter && {
+    version: converter.version, expectedRevision: converterRevision, binarySha256: converter.binarySha256,
+  },
   environment: {
     platform: process.platform, os: os.release(), arch: os.arch(), cpu: os.cpus()[0]?.model,
     logicalCores: os.cpus().length, logicalMemoryBytes: os.totalmem(), node: process.version,
@@ -278,5 +294,8 @@ await Promise.all([
 ]);
 console.log(`Reports written to ${output}`);
 if (report.summary.all.A.ok === 0 || (!options['allow-partial'] && report.summary.all.D.ok === 0)) {
+  process.exitCode = 1;
+}
+if (converter && (report.summary.all.E.ok === 0 || (!options['allow-partial'] && report.summary.all.F.ok === 0))) {
   process.exitCode = 1;
 }

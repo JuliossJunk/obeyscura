@@ -29,7 +29,7 @@ subcommand.
 Load a URL and print its content or an evaluated expression.
 
 ```
-    --dump <FORMAT>          html | text | links | markdown | original | assets | cookies
+    --dump <FORMAT>          html | text | links | markdown | structured-markdown | original | assets | cookies
                              (default html)
     --file <PATH>           Batch raw fetches from a URL list; - reads stdin
     --concurrency <N>       Parallel batch fetches (default 1; used with --file)
@@ -69,10 +69,28 @@ requests a fixed `N`-second delay. `--timeout` separately bounds navigation.
 | `html`     | Rendered HTML (default)                                   |
 | `text`     | Plain text                                                |
 | `markdown` | Markdown conversion                                       |
+| `structured-markdown` | Markdown with HTML for tables, formulas, disclosures and other structured content |
 | `links`    | Links as URL and optional tab-separated text, one per line                        |
 | `assets`   | Every external resource, one JSON object per line (DOM assets plus `fetch()`/XHR requests) |
 | `original` | Raw HTTP response body (binary-safe, bypasses the engine) |
 | `cookies`  | All cookies in the jar as a JSON array, including HttpOnly cookies invisible to `document.cookie` |
+
+## `obscura content [HTML_FILE]`
+
+Convert a UTF-8 HTML snapshot from any browser to structured Markdown. With no
+file or with `-`, read the snapshot from stdin. Pass `--format html` to copy the
+input bytes, or `--output FILE` to write the result to a file.
+
+```sh
+obscura fetch https://example.com --dump html --output capture.html
+obscura content capture.html --output capture.md
+obscura content capture.html --format html
+```
+
+Keeping the capture file makes the source of the Markdown available after the
+page changes. Structured Markdown uses HTML for structures that need it, and
+keeps relative links as captured. It omits executable page markup. The HTML
+output retains the original content, including page scripts.
 
 ## `obscura serve`
 
