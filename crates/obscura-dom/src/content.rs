@@ -12,6 +12,20 @@ enum Block {
 /// that Markdown cannot express faithfully. The caller retains the original
 /// snapshot. Parsing the snapshot does not execute scripts or load resources.
 pub fn structured_markdown(html: &str) -> String {
+    render_markdown(html, |_, _, _| {})
+}
+
+/// Get the full rendition and its ordered section boundaries in UTF-8 bytes.
+/// Adjacent slices of the rendition can be concatenated without losing content.
+pub fn markdown_sections(html: &str) -> (String, Vec<(usize, u8, String)>) {
+    let mut sections = Vec::new();
+    let markdown = render_markdown(html, |offset, level, title| {
+        sections.push((offset, level, title()));
+    });
+    (markdown, sections)
+}
+
+fn render_markdown(html: &str, mut heading: impl FnMut(usize, u8, &dyn Fn() -> String)) -> String {
     let tree = parse_html(html);
     let Some(body) = tree.query_selector("body").ok().flatten() else {
         return String::new();
@@ -43,6 +57,9 @@ pub fn structured_markdown(html: &str) -> String {
         let Some(node) = tree.borrow_node(id) else { continue };
         let Some(name) = node.as_element() else { continue };
         let tag = name.local.as_ref();
+        if let [b'h', level @ b'1'..=b'6'] = tag.as_bytes() {
+            heading(markdown.len(), level - b'0', &|| tree.text_content(id));
+        }
         let has_attributes = node.attrs().is_some_and(|attrs| !attrs.is_empty());
         if is_container(tag) {
             if has_attributes || tag == "nav" {

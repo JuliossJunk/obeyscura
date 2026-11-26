@@ -163,9 +163,9 @@ export async function loadConverter(binary, expectedRevision) {
   return {
     ...provenance,
     expectedRevision,
-    convert(html) {
+    convert(html, args = []) {
       return new Promise((resolve, reject) => {
-        const process = execFile(binary, ['content'], { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 },
+        const process = execFile(binary, ['content', ...args], { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 },
           (error, stdout) => error ? reject(error) : resolve(stdout));
         process.stdin.on('error', reject);
         process.stdin.end(html);

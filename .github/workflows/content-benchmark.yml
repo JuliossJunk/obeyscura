@@ -110,7 +110,7 @@ jobs:
           args=(--source-revision "$BASELINE_REVISION" --obscura-revision "$BASELINE_REVISION"
             --obscura ../target/baseline-obscura)
           if [[ "$RUN_CANDIDATE" == true ]]; then
-            args+=(--converter ../target/structured-obscura --converter-revision HEAD)
+            args+=(--converter ../target/structured-obscura --converter-revision HEAD --sections)
           fi
           npm run benchmark -- "${args[@]}"
           if [[ "$RUN_PUBLIC_BENCHMARK" == true ]]; then

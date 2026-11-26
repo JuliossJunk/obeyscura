@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { launchChromium, launchObscura, loadConverter, serveFixtures } from './engines.mjs';
 import { evaluateSerializer, measure, standardMarkdown } from './measure.mjs';
+import { benchmarkSections } from './sections.mjs';
 
 const { values: options } = parseArgs({ options: {
   out: { type: 'string' },
@@ -19,6 +20,7 @@ const { values: options } = parseArgs({ options: {
   'converter-revision': { type: 'string' },
   'source-revision': { type: 'string' },
   'allow-partial': { type: 'boolean', default: false },
+  sections: { type: 'boolean', default: false },
 } });
 if (!['local', 'public'].includes(options.dataset)) throw new Error('Invalid --dataset');
 const publicPages = options.dataset === 'public';
@@ -30,6 +32,7 @@ if (!options.obscura && !options['allow-partial']) {
 }
 if (options['obscura-revision'] && !options.obscura) throw new Error('--obscura-revision requires --obscura');
 if (options['converter-revision'] && !options.converter) throw new Error('--converter-revision requires --converter');
+if (options.sections && !options.converter) throw new Error('--sections requires --converter');
 
 const fromHere = relative => new URL(relative, import.meta.url);
 const sha256 = data => createHash('sha256').update(data).digest('hex');
@@ -118,6 +121,14 @@ async function record(config, attempt, fixture, capture, format, extract) {
       const content = await extract(capture);
       row.extractMs = config === 'D' ? capture.stages.nativeMarkdown : performance.now() - start;
       Object.assign(row, measure(content, format, fixture, capture.url));
+      if (options.sections && (config === 'E' || config === 'F')) {
+        try {
+          row.sectionReading = await benchmarkSections(converter, capture, fixture, content);
+        } catch (error) {
+          row.sectionReading = { error: describeError(error) };
+          process.exitCode = 1;
+        }
+      }
     } catch (error) {
       row.status = 'extraction_error';
       row.error = describeError(error);

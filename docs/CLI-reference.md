@@ -92,6 +92,23 @@ page changes. Structured Markdown uses HTML for structures that need it, and
 keeps relative links as captured. It omits executable page markup. The HTML
 output retains the original content, including page scripts.
 
+`--format outline` lists the headings and section indices as JSON. Use its
+`next_cursor`, when present, to read the next outline page. The byte limit for
+each outline response is set with `--max-bytes` and defaults to 4096.
+
+```sh
+obscura content capture.html --format outline --max-bytes 2048
+obscura content capture.html --format section --cursor SNAPSHOT:INDEX
+```
+
+Replace `SNAPSHOT` with the `snapshot` value from the outline and `INDEX` with
+the chosen entry's `index`. Indices start at zero. `snapshot` is the SHA-256 of
+the exact input bytes. Keep the capture file for subsequent reads. The section
+format writes a complete Markdown slice, including any tables or code it
+contains. Concatenate those slices in index order to recover the full Markdown
+output. Headings inside atomic HTML blocks, such as tables and disclosures,
+remain part of their enclosing section.
+
 ## `obscura serve`
 
 Run the CDP server. Puppeteer and Playwright connect over WebSocket.

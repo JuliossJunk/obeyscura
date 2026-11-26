@@ -10,6 +10,10 @@ turndown.use(gfm);
 turndown.remove(['script', 'style', 'noscript', 'template']);
 const markup = new MarkdownIt({ html: true });
 const encodings = Object.fromEntries(['o200k_base', 'cl100k_base'].map(name => [name, getEncoding(name)]));
+
+export function countTokens(content) {
+  return Object.fromEntries(Object.entries(encodings).map(([name, encoding]) => [name, encoding.encode(content, [], []).length]));
+}
 const virtualConsole = new VirtualConsole();
 virtualConsole.on('jsdomError', error => {
   if (error.type !== 'css parsing') console.warn(`jsdom: ${error.message}`);
@@ -80,9 +84,7 @@ export function measure(content, format, fixture, url) {
   });
   return {
     bytes: Buffer.byteLength(content),
-    tokens: Object.fromEntries(Object.entries(encodings).map(([name, encoding]) => [
-      name, encoding.encode(content, [], []).length,
-    ])),
+    tokens: countTokens(content),
     ...evaluated,
   };
 }

@@ -1,4 +1,5 @@
 mod batch;
+mod content;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -228,6 +229,14 @@ enum Command {
         #[arg(long, value_enum, default_value = "markdown")]
         format: ContentFormat,
 
+        /// Snapshot cursor from an outline, or a snapshot ID followed by a section index.
+        #[arg(long, value_name = "SNAPSHOT:INDEX")]
+        cursor: Option<String>,
+
+        /// Maximum JSON bytes for an outline response.
+        #[arg(long, default_value_t = 4096, value_parser = clap::value_parser!(u32).range(512..=1_048_576))]
+        max_bytes: u32,
+
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
     },
@@ -258,6 +267,8 @@ enum Command {
 enum ContentFormat {
     Markdown,
     Html,
+    Outline,
+    Section,
 }
 
 #[derive(Clone, Debug, clap::ValueEnum, PartialEq, Eq)]
@@ -667,7 +678,7 @@ async fn run_cli() -> anyhow::Result<()> {
             )
             .await?;
         }
-        Some(Command::Content { input, format, output }) => {
+        Some(Command::Content { input, format, cursor, max_bytes, output }) => {
             let bytes = if let Some(path) = input.filter(|path| path != std::path::Path::new("-")) {
                 tokio::fs::read(path).await?
             } else {
@@ -676,12 +687,7 @@ async fn run_cli() -> anyhow::Result<()> {
                 std::io::stdin().lock().read_to_end(&mut bytes)?;
                 bytes
             };
-            let result = match format {
-                ContentFormat::Html => bytes,
-                ContentFormat::Markdown => obscura_dom::content::structured_markdown(
-                    std::str::from_utf8(&bytes)?,
-                ).into_bytes(),
-            };
+            let result = content::read(bytes, format, cursor.as_deref(), max_bytes as usize)?;
             write_or_print_bytes(&result, output.as_ref()).await?;
         }
         Some(Command::Mcp {
