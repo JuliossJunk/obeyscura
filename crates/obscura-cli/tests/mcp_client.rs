@@ -350,6 +350,45 @@ fn test_navigate_and_snapshot() {
 }
 
 #[test]
+fn browser_read_recovers_html_and_sections_from_one_snapshot() {
+    use serde_json::{json, Value};
+
+    let server = TestPageServer::spawn();
+    let mut client = McpClient::spawn();
+    let nav = client.tool("browser_navigate", json!({ "url": server.url() }));
+    assert!(nav["result"]["isError"].is_null(), "{nav}");
+
+    let response = client.tool("browser_read", json!({ "max_bytes": 512 }));
+    let outline: Value = serde_json::from_str(content_text(&response)).unwrap();
+    let snapshot = outline["snapshot"].as_str().unwrap();
+    let section = outline["sections"].as_array().unwrap().iter()
+        .find(|entry| entry["title"] == "Example Domain").unwrap();
+    let section_cursor = format!("{snapshot}:{}", section["index"]);
+    let response = client.tool("browser_read", json!({ "format": "section", "cursor": section_cursor }));
+    let page: Value = serde_json::from_str(content_text(&response)).unwrap();
+    assert!(page["text"].as_str().unwrap().contains("Deterministic local MCP fixture."));
+
+    let mut cursor = format!("{snapshot}:html:0");
+    let mut html = String::new();
+    loop {
+        let response = client.tool("browser_read", json!({ "format": "html", "cursor": cursor, "max_bytes": 512 }));
+        let body = content_text(&response);
+        assert!(body.len() <= 512, "{body}");
+        let page: Value = serde_json::from_str(body).unwrap();
+        html.push_str(page["text"].as_str().unwrap());
+        let Some(next) = page["next_cursor"].as_str() else { break };
+        assert_ne!(next, cursor);
+        cursor = next.to_string();
+    }
+    assert!(html.starts_with("<!DOCTYPE html>\n"), "{html}");
+    assert!(html.contains("<h1>Example Domain</h1>"), "{html}");
+
+    client.tool("browser_close", json!({}));
+    let stale = client.tool("browser_read", json!({ "format": "section", "cursor": section_cursor }));
+    assert_eq!(stale["result"]["isError"], true, "{stale}");
+}
+
+#[test]
 fn test_evaluate() {
     let server = TestPageServer::spawn();
     let mut c = McpClient::spawn();

@@ -8,6 +8,7 @@ on:
       - '.github/workflows/content-benchmark.yml'
       - 'crates/obscura-dom/**'
       - 'crates/obscura-cli/**'
+      - 'crates/obscura-mcp/**'
   pull_request:
     paths:
       - 'benchmarks/**'
@@ -116,6 +117,12 @@ jobs:
           if [[ "$RUN_PUBLIC_BENCHMARK" == true ]]; then
             npm run benchmark -- --dataset public "${args[@]}"
           fi
+      - name: Measure MCP section reads
+        if: github.ref_name == 'benchmark/structured-markdown'
+        working-directory: benchmarks
+        run: |
+          node mcp-reading.mjs --binary ../target/structured-obscura --out ../target/content-benchmark-mcp
+          node mcp-reading.mjs --binary ../target/structured-obscura --public --out ../target/content-benchmark-mcp-public
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -124,6 +131,8 @@ jobs:
           path: |
             target/content-benchmark/benchmark_results.*
             target/content-benchmark-public/benchmark_results.*
+            target/content-benchmark-mcp/benchmark_results.*
+            target/content-benchmark-mcp-public/benchmark_results.*
           if-no-files-found: ignore
       - name: Install cargo-nextest
         if: github.ref_name == 'benchmark/structured-markdown'
@@ -134,7 +143,7 @@ jobs:
       - name: Test the modified crates
         if: github.ref_name == 'benchmark/structured-markdown'
         working-directory: target/benchmark-source
-        run: cargo nextest run --release --features render -p obscura-dom -p obscura-cli --no-fail-fast
+        run: cargo nextest run --release --features render -p obscura-dom -p obscura-cli -p obscura-mcp --no-fail-fast
       - name: Test the workspace
         if: github.ref_name == 'benchmark/structured-markdown'
         working-directory: target/benchmark-source

@@ -1916,16 +1916,7 @@ fn dump_cookies(page: &Page) -> String {
 }
 
 fn dump_html(page: &Page) -> String {
-    page.with_dom(|dom| {
-        if let Ok(Some(html_node)) = dom.query_selector("html") {
-            let html = dom.outer_html(html_node);
-            format!("<!DOCTYPE html>\n{}", html)
-        } else {
-            let doc = dom.document();
-            dom.inner_html(doc)
-        }
-    })
-    .unwrap_or_default()
+    page.with_dom(obscura_dom::snapshot::capture_html).unwrap_or_default()
 }
 
 fn dump_text(page: &mut Page) -> String {

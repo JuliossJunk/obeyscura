@@ -2067,7 +2067,6 @@ dependencies = [
  "obscura-net",
  "serde",
  "serde_json",
- "sha2",
  "tokio",
  "tokio-tungstenite",
  "tracing",
@@ -2079,12 +2078,16 @@ dependencies = [
 name = "obscura-dom"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "cssparser",
  "html5ever",
  "markup5ever",
  "precomputed-hash",
  "selectors",
+ "serde",
+ "serde_json",
  "servo_arc",
+ "sha2",
  "thiserror 2.0.18",
  "tracing",
 ]

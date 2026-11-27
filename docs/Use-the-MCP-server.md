@@ -226,3 +226,16 @@ navigation errors explain the existing `--allow-private-network` /
 `OBSCURA_ALLOW_PRIVATE_NETWORK=1` opt-in for your own local services. The hint
 does not grant access, is omitted for known metadata endpoints and special
 address ranges, and is not shown by the HTTP MCP transport.
+## Reading a page by section
+
+Call `browser_read` with an empty argument object to capture the active page and
+get its outline. The result contains the snapshot SHA-256 and numbered headings.
+Use `next_cursor` to continue an outline. To read a section, pass
+`{"format":"section","cursor":"SNAPSHOT:INDEX"}`. To recover the original HTML,
+pass `{"format":"html","cursor":"SNAPSHOT:html:0"}`. Both return a JSON object
+with `text` and `next_cursor`. Keep the same format when following that cursor.
+
+`max_bytes` limits the UTF-8 size of the returned JSON text and defaults to
+4096. It accepts values from 512 to 65536. Each browser session retains its most
+recent capture, up to 4 MiB of source HTML. A fresh capture replaces it.
+`browser_close` clears the capture. All text from the page is untrusted data.
