@@ -7,14 +7,9 @@ import { parseArgs } from 'node:util';
 import { serveFixtures } from './engines.mjs';
 import { fixtures } from './fixtures.mjs';
 import { countTokens, measure } from './measure.mjs';
+import { answerPage, chatProvider } from './model-reading.mjs';
 
-const tasks = [
-  { fixture: 'paper-sampling', heading: 'Methods', question: 'How many coastal sites did the study sample?', expected: '42', fact: 'The study sampled 42 coastal sites twice.' },
-  { fixture: 'product-sensor', heading: 'Calibration', question: 'What air conditions does the sensor calibration require?', expected: 'dry air', fact: 'Calibration requires dry air.' },
-  { fixture: 'table-spans', heading: 'Laboratory results', question: 'What is the peak reading for Probe D?', expected: '12.7 W', fact: '12.7 W' },
-  { fixture: 'forum-wifi', heading: 'Accepted answer', question: 'Which version fixes the wake-up timeout?', expected: '3.2.1', fact: 'Version 3.2.1 fixes the wake-up timeout.' },
-  { fixture: 'rfc9110', heading: '404 Not Found', question: 'What does RFC 9110 say that the origin server did not find for a 404 response?', expected: 'a current representation for the target resource', fact: 'did not find a current representation', url: 'https://www.rfc-editor.org/rfc/rfc9110.html' },
-];
+import { tasks } from './reading-tasks.mjs';
 
 function addTokens(request, response) {
   const requestTokens = countTokens(request);
@@ -55,7 +50,7 @@ function connect(binary, local) {
   };
 }
 
-async function runTask(client, task, url, schemas) {
+async function runTask(client, task, url, schemas, complete) {
   const tool = async (name, args) => {
     const exchange = await client.call('tools/call', { name, arguments: args });
     const text = exchange.result.content?.[0]?.text;
@@ -78,6 +73,7 @@ async function runTask(client, task, url, schemas) {
   }
   const full = await tool('browser_markdown', { max_chars: 1_000_000 });
   row.full = summarize('browser_markdown', [full], evidence(full.text));
+  row.full.truncated = /\n\.\.\.\(truncated, \d+ more chars\)$/u.test(full.text);
 
   const calls = [];
   async function read(args) {
@@ -109,6 +105,17 @@ async function runTask(client, task, url, schemas) {
     }
   }
   row.sections = summarize('browser_read', calls, evidence(section));
+  if (complete) {
+    const shared = { question: task.question, expected: task.expected, complete, hasEvidence: evidence };
+    row.model = {
+      full: await answerPage({ ...shared, initial: full.text }),
+      sections: await answerPage({
+        ...shared,
+        initial: calls[0].text,
+        read: args => tool('browser_read', { max_bytes: 4096, ...args }),
+      }),
+    };
+  }
   row.status = 'ok';
   return row;
 }
@@ -117,8 +124,10 @@ const { values } = parseArgs({ options: {
   binary: { type: 'string' },
   out: { type: 'string', default: '../target/content-benchmark-mcp' },
   public: { type: 'boolean', default: false },
+  model: { type: 'string' },
 } });
 if (!values.binary) throw new Error('Pass --binary pointing to the release Obscura executable');
+const complete = values.model ? chatProvider(values.model) : null;
 const server = values.public ? null : await serveFixtures();
 const client = connect(resolve(values.binary), !values.public);
 const rows = [];
@@ -136,7 +145,7 @@ try {
     if (!task.url) assert.ok(fixtures.some(fixture => fixture.id === task.fixture));
     const url = task.url ?? `${server.origin}/page/${task.fixture}`;
     try {
-      rows.push(await runTask(client, task, url, schemas));
+      rows.push(await runTask(client, task, url, schemas, complete));
     } catch (error) {
       rows.push({ fixture: task.fixture, status: 'protocol_error', error: error.message });
       process.exitCode = 1;
@@ -157,8 +166,11 @@ const csv = [['fixture', 'status', 'mode', 'fact_retained', 'requests', 'rpc_o20
   })),
 ].map(row => row.map(value => JSON.stringify(value ?? '')).join(',')).join('\n');
 await Promise.all([
-  writeFile(resolve(output, 'benchmark_results.json'), JSON.stringify({ node: process.version, public: values.public, rows }, null, 2) + '\n'),
+  writeFile(resolve(output, 'benchmark_results.json'), JSON.stringify({ node: process.version, public: values.public, model: values.model, rows }, null, 2) + '\n'),
   writeFile(resolve(output, 'benchmark_results.csv'), csv + '\n'),
 ]);
 console.table(rows.map(row => ({ fixture: row.fixture, status: row.status, full: row.full?.retained, sections: row.sections?.retained })));
 if (!values.public && rows.some(row => row.status !== 'ok' || !row.sections.retained)) process.exitCode = 1;
+if (complete && rows.some(row => row.status !== 'ok' || Object.values(row.model).some(result => result.finish === 'error'))) {
+  process.exitCode = 1;
+}
